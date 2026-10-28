@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import create_engine, Column, String, Text, DateTime
+from sqlalchemy import create_engine, Column, String, Text, DateTime, text, inspect
 from sqlalchemy.orm import declarative_base, sessionmaker
 from google import genai
 from google.genai import types
@@ -37,6 +37,14 @@ class ReceiptRecord(Base):
     run_id = Column(String(256), nullable=False)
 
 Base.metadata.create_all(engine)
+# Lightweight forward migration for databases created by an earlier version.
+# SQLAlchemy create_all() does not add columns to an existing table.
+if engine.dialect.name == "postgresql":
+    with engine.begin() as connection:
+        connection.execute(text(
+            "ALTER TABLE public.incident_runs "
+            "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        ))
 app = FastAPI(title="Gemini Incident Agent", version="2.0.0")
 
 
@@ -162,7 +170,35 @@ def render_response(state):
 @app.get("/")
 def root(): return {"service": "gemini-incident-agent", "version": "2.0.0", "profile": PROFILE}
 @app.get("/health")
-def health(): return {"status": "ok", "model": MODEL, "storage": "postgres" if "postgres" in DATABASE_URL else "sqlite"}
+def health():
+    return {"status": "ok", "model": MODEL, "storage": "postgres" if "postgres" in DATABASE_URL else "sqlite"}
+
+@app.get("/health/db")
+def health_db():
+    """Check database connectivity and the incident_runs schema without exposing secrets."""
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        table_names = set(inspect(engine).get_table_names(schema="public" if engine.dialect.name == "postgresql" else None))
+        if "incident_runs" not in table_names:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "database": "connected", "schema": "incident_runs table missing"},
+            )
+        columns = {column["name"] for column in inspect(engine).get_columns(
+            "incident_runs", schema="public" if engine.dialect.name == "postgresql" else None
+        )}
+        required = {"run_id", "request_hash", "state_json", "created_at"}
+        missing = sorted(required - columns)
+        if missing:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "database": "connected", "schema": "missing columns", "missing_columns": missing},
+            )
+        return {"status": "ok", "database": "connected", "table": "incident_runs", "schema": "ok"}
+    except Exception:
+        # Do not expose connection strings, passwords, or driver exception details.
+        return JSONResponse(status_code=503, content={"status": "error", "database": "connection_failed"})
 
 @app.post("/v2/incidents")
 async def create_incident(request: Request):
