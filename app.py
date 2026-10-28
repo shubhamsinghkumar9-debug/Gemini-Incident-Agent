@@ -303,7 +303,7 @@ def make_gemini_client():
     return genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
-            timeout=15000,  # 15 seconds; Gemini requires at least 10 seconds
+            timeout=25000,  # 25 seconds; allow diagnosis generation more time while staying below common proxy limits
         ),
     )
 
@@ -1674,3 +1674,4 @@ async def unexpected_error(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "internal server error"},
     )
+    
