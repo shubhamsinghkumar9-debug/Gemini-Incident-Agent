@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: gemini-incident-agent
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: DATABASE_URL
+        fromDatabase:
+          name: incident-agent-db
+          property: connectionString
+
+databases:
+  - name: incident-agent-db
+    plan: free
