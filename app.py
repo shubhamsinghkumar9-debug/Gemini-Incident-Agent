@@ -10,8 +10,9 @@ from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, String, Text, DateTime, text, inspect
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import create_engine, text, inspect
+from sqlalchemy.orm import sessionmaker
+from models import Base, RunRecord, ReceiptRecord
 from google import genai
 from google.genai import types
 from google.genai import errors
@@ -63,39 +64,10 @@ Session = sessionmaker(
     expire_on_commit=False,
 )
 
-Base = declarative_base()
-
 app = FastAPI(
     title="Gemini Incident Agent",
     version="2.1.0",
 )
-
-
-# ============================================================
-# Database models
-# ============================================================
-
-class RunRecord(Base):
-    __tablename__ = "incident_runs"
-
-    run_id = Column(String(256), primary_key=True)
-    request_hash = Column(String(64), nullable=False)
-    state_json = Column(Text, nullable=False)
-    created_at = Column(
-        DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        nullable=False,
-    )
-
-
-class ReceiptRecord(Base):
-    __tablename__ = "incident_receipts"
-
-    receipt_id = Column(String(256), primary_key=True)
-    request_hash = Column(String(64), nullable=False)
-    response_json = Column(Text, nullable=False)
-    run_id = Column(String(256), nullable=False)
-
 
 Base.metadata.create_all(engine)
 
@@ -235,22 +207,29 @@ def trace_doc(spans):
     }
 
 
+def decode_json_value(value):
+    """Decode legacy JSON text or return a native JSON/JSONB value unchanged."""
+    if value is None:
+        return None
+    return json.loads(value) if isinstance(value, (str, bytes, bytearray)) else value
+
+
 def load_state(db, run_id):
     row = db.get(RunRecord, run_id)
-    return json.loads(row.state_json) if row else None
+    return decode_json_value(row.state_json) if row else None
 
 
 def save_state(db, run_id, request_hash, state):
     row = db.get(RunRecord, run_id)
 
     if row:
-        row.state_json = canonical(state)
+        row.state_json = json.loads(canonical(state))
     else:
         db.add(
             RunRecord(
                 run_id=run_id,
                 request_hash=request_hash,
-                state_json=canonical(state),
+                state_json=json.loads(canonical(state)),
             )
         )
 
@@ -856,7 +835,7 @@ async def create_incident(request: Request):
                 )
 
             return JSONResponse(
-                render_response(json.loads(existing.state_json))
+                render_response(decode_json_value(existing.state_json))
             )
 
         if not os.getenv("GEMINI_API_KEY"):
@@ -1058,7 +1037,7 @@ def get_incident(run_id: str):
             )
 
         return JSONResponse(
-            render_response(json.loads(row.state_json))
+            render_response(decode_json_value(row.state_json))
         )
 
     finally:
@@ -1346,7 +1325,7 @@ async def receive_receipt(run_id: str, request: Request):
                 detail="run not found",
             )
 
-        state = json.loads(row.state_json)
+        state = decode_json_value(row.state_json)
         internal = state["_internal"]
 
         request_hash = digest(body)
@@ -1635,7 +1614,7 @@ async def receive_receipt(run_id: str, request: Request):
 
         response = render_response(state)
 
-        row.state_json = canonical(state)
+        row.state_json = json.loads(canonical(state))
 
         db.add(
             ReceiptRecord(
@@ -1674,4 +1653,3 @@ async def unexpected_error(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "internal server error"},
     )
-    
