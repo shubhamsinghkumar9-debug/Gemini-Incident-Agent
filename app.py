@@ -303,7 +303,7 @@ def make_gemini_client():
     return genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
-            timeout=6000,
+            timeout=15000,  # 15 seconds; Gemini requires at least 10 seconds
         ),
     )
 
