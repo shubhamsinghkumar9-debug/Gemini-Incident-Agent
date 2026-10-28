@@ -4,6 +4,7 @@ import hashlib
 import secrets
 import re
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -15,13 +16,16 @@ from google import genai
 from google.genai import types
 from google.genai import errors
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("incident_agent")
+
 
 # ============================================================
 # Configuration
 # ============================================================
 
 PROFILE = "ga5-incident-agent/v2"
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -315,7 +319,6 @@ def test_gemini_model():
         model=MODEL,
         contents="Reply with exactly: OK",
         config=types.GenerateContentConfig(
-            temperature=0,
             max_output_tokens=10,
         ),
     )
@@ -452,6 +455,8 @@ async def health_model():
         }
 
     except Exception as exc:
+        # Detailed error goes to Render logs only; never return secrets to clients.
+        logger.exception("Gemini health check failed for model %s", MODEL)
         status_code = (
             getattr(exc, "code", None)
             if isinstance(exc, errors.APIError)
@@ -544,12 +549,12 @@ def model_plan(req, trace_id, agent_span_id, model_span_id):
             contents=canonical(prompt_data),
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.1,
                 max_output_tokens=900,
             ),
         )
 
     except errors.APIError as exc:
+        logger.exception("Gemini incident diagnosis failed for model %s", MODEL)
         if getattr(exc, "code", None) == 503:
             raise HTTPException(
                 status_code=503,
@@ -576,6 +581,7 @@ def model_plan(req, trace_id, agent_span_id, model_span_id):
         ) from None
 
     except Exception:
+        logger.exception("Unexpected Gemini incident diagnosis error for model %s", MODEL)
         raise HTTPException(
             status_code=502,
             detail="Unable to contact Gemini.",
