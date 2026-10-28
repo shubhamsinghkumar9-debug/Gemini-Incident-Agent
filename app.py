@@ -472,8 +472,9 @@ async def health_model():
                 "reachable": False,
                 "error_code": status_code,
                 "message": (
-                    "Gemini request failed. Check model availability, "
-                    "API key, quota, and network connectivity."
+                    "Gemini request failed. Check Render logs for the "
+                    "'Gemini health check failed' entry. This diagnostic "
+                    "message confirms the updated app.py is deployed."
                 ),
             },
         )
@@ -1576,7 +1577,8 @@ async def receive_receipt(run_id: str, request: Request):
 
 @app.exception_handler(Exception)
 async def unexpected_error(request: Request, exc: Exception):
-    # Never expose credentials, request bodies, transcripts, or stack traces.
+    # Log the traceback privately in Render; never expose it to API clients.
+    logger.exception("Unhandled server error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
         content={"detail": "internal server error"},
