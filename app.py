@@ -303,7 +303,7 @@ def make_gemini_client():
     return genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(
-            timeout=15000,  # 15 seconds; minimum is 10 seconds
+            timeout=6000,
         ),
     )
 
@@ -485,7 +485,37 @@ async def health_model():
 # ============================================================
 
 def model_plan(req, trace_id, agent_span_id, model_span_id):
-    incident = req["incident"]
+    # Guard this function even if it is called outside the HTTP handler.
+    incident = req.get("incident") if isinstance(req, dict) else None
+    if not isinstance(incident, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="incident must be a JSON object",
+        )
+
+    if not isinstance(incident.get("transcript"), str):
+        raise HTTPException(
+            status_code=422,
+            detail="incident.transcript must be a string",
+        )
+
+    allowed_root_causes = incident.get("allowedRootCauses")
+    if (
+        not isinstance(allowed_root_causes, list)
+        or not allowed_root_causes
+        or not all(isinstance(item, str) and item.strip() for item in allowed_root_causes)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="incident.allowedRootCauses must be a non-empty array of strings",
+        )
+
+    policy = req.get("policy", {})
+    if not isinstance(policy, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="policy must be a JSON object",
+        )
 
     # Never send sensitive fields or doNotExport values to Gemini.
     prompt_data = {
@@ -757,6 +787,59 @@ async def create_incident(request: Request):
         raise HTTPException(
             status_code=422,
             detail="runId must be a nonempty opaque ID of at least eight characters",
+        )
+
+    # Validate the request before invoking Gemini or touching the database.
+    # A body containing only profile/runId previously reached model_plan(),
+    # where req["incident"] raised KeyError and surfaced as HTTP 500.
+    incident = body.get("incident")
+    if not isinstance(incident, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="incident must be a JSON object",
+        )
+
+    if not isinstance(incident.get("transcript"), str):
+        raise HTTPException(
+            status_code=422,
+            detail="incident.transcript must be a string",
+        )
+
+    allowed_root_causes = incident.get("allowedRootCauses")
+    if (
+        not isinstance(allowed_root_causes, list)
+        or not allowed_root_causes
+        or not all(isinstance(item, str) and item.strip() for item in allowed_root_causes)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="incident.allowedRootCauses must be a non-empty array of strings",
+        )
+
+    tool_catalog = body.get("toolCatalog")
+    if not isinstance(tool_catalog, list) or not tool_catalog:
+        raise HTTPException(
+            status_code=422,
+            detail="toolCatalog must be a non-empty array",
+        )
+
+    valid_tools = [
+        item for item in tool_catalog
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and item["name"].strip()
+    ]
+    if not valid_tools:
+        raise HTTPException(
+            status_code=422,
+            detail="toolCatalog must contain at least one tool with a non-empty name",
+        )
+
+    policy = body.get("policy", {})
+    if not isinstance(policy, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="policy must be a JSON object",
         )
 
     db = Session()
@@ -1577,7 +1660,15 @@ async def receive_receipt(run_id: str, request: Request):
 
 @app.exception_handler(Exception)
 async def unexpected_error(request: Request, exc: Exception):
-    # Log the traceback privately in Render; never expose it to API clients.
+    # Keep details in server logs only; never return them to API clients.
+    # Separate exception metadata helps log providers that split tracebacks.
+    logger.error(
+        "Unhandled server exception type=%s message=%s path=%s method=%s",
+        type(exc).__name__,
+        str(exc)[:1000],
+        request.url.path,
+        request.method,
+    )
     logger.exception("Unhandled server error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
