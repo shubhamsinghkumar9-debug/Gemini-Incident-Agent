@@ -11,6 +11,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text, inspect
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import sessionmaker
 from models import Base, RunRecord, ReceiptRecord
 from google import genai
@@ -63,6 +64,11 @@ Session = sessionmaker(
     bind=engine,
     expire_on_commit=False,
 )
+
+# Ensure state_json is bound as PostgreSQL JSONB even if an older models.py
+# declares it as String/Text. This matches the existing production schema.
+if engine.dialect.name == "postgresql":
+    RunRecord.__table__.c.state_json.type = JSONB()
 
 app = FastAPI(
     title="Gemini Incident Agent",
